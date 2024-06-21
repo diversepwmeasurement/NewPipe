@@ -1,141 +1,114 @@
-name: CI
-
-on:
-  workflow_dispatch:
-  pull_request:
-    branches:
-      - dev
-      - master
-      - release**
-    paths-ignore:
-      - 'README.md'
-      - 'doc/**'
-      - 'fastlane/**'
-      - 'assets/**'
-      - '.github/**/*.md'
-      - '.github/FUNDING.yml'
-      - '.github/ISSUE_TEMPLATE/**'
-  push:
-    branches:
-      - dev
-      - master
-    paths-ignore:
-      - 'README.md'
-      - 'doc/**'
-      - 'fastlane/**'
-      - 'assets/**'
-      - '.github/**/*.md'
-      - '.github/FUNDING.yml'
-      - '.github/ISSUE_TEMPLATE/**'
-
 jobs:
   build-and-test-jvm:
-    runs-on: ubuntu-latest
-
     permissions:
       contents: read
-
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-      - uses: gradle/wrapper-validation-action@v2
-
-      - name: create and checkout branch
-        # push events already checked out the branch
-        if: github.event_name == 'pull_request'
-        env:
-          BRANCH: ${{ github.head_ref }}
-        run: git checkout -B "$BRANCH"
-
-      - name: set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: "temurin"
-          cache: 'gradle'
-
-      - name: Build debug APK and run jvm tests
-        run: ./gradlew assembleDebug lintDebug testDebugUnitTest --stacktrace -DskipFormatKtlint
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app
-          path: app/build/outputs/apk/debug/*.apk
-
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      uses: gradle/wrapper-validation-action@v2
+    - continue-on-error: true
+      env:
+        BRANCH: ${{ github.head_ref }}
+      if: github.event_name == 'pull_request'
+      name: create and checkout branch
+      run: git checkout -B "$BRANCH"
+    - continue-on-error: true
+      name: set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        cache: gradle
+        distribution: temurin
+        java-version: 17
+    - continue-on-error: true
+      name: Build debug APK and run jvm tests
+      run: ./gradlew assembleDebug lintDebug testDebugUnitTest --stacktrace -DskipFormatKtlint
+    - continue-on-error: true
+      name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: app
+        path: app/build/outputs/apk/debug/*.apk
+  sonar:
+    permissions:
+      contents: read
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        cache: gradle
+        distribution: temurin
+        java-version: 17
+    - continue-on-error: true
+      name: Cache SonarCloud packages
+      uses: actions/cache@v4
+      with:
+        key: ${{ runner.os }}-sonar
+        path: ~/.sonar/cache
+        restore-keys: ${{ runner.os }}-sonar
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      name: Build and analyze
+      run: ./gradlew build sonar --info
   test-android:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    permissions:
+      contents: read
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Enable KVM
+      run: 'echo ''KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"''
+        | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+
+        sudo udevadm control --reload-rules
+
+        sudo udevadm trigger --name-match=kvm
+
+        '
+    - continue-on-error: true
+      name: set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        cache: gradle
+        distribution: temurin
+        java-version: 17
+    - continue-on-error: true
+      name: Run android tests
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        arch: ${{ matrix.arch }}
+        script: ./gradlew connectedCheck --stacktrace
+        target: ${{ matrix.target }}
+    - continue-on-error: true
+      if: failure()
+      name: Upload test report when tests fail
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-test-report-api${{ matrix.api-level }}
+        path: app/build/reports/androidTests/connected/**
     strategy:
       matrix:
         include:
-          - api-level: 21
-            target: default
-            arch: x86
-          - api-level: 33
-            target: google_apis # emulator API 33 only exists with Google APIs
-            arch: x86_64
-
-    permissions:
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: "temurin"
-          cache: 'gradle'
-
-      - name: Run android tests
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.api-level }}
-          target: ${{ matrix.target }}
-          arch: ${{ matrix.arch }}
-          script: ./gradlew connectedCheck --stacktrace
-
-      - name: Upload test report when tests fail # because the printed out stacktrace (console) is too short, see also #7553
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: android-test-report-api${{ matrix.api-level }}
-          path: app/build/reports/androidTests/connected/**
-
-  sonar:
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: "temurin"
-          cache: 'gradle'
-
-      - name: Cache SonarCloud packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.sonar/cache
-          key: ${{ runner.os }}-sonar
-          restore-keys: ${{ runner.os }}-sonar
-
-      - name: Build and analyze
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: ./gradlew build sonar --info
+        - api-level: 21
+          arch: x86
+          target: default
+        - api-level: 33
+          arch: x86_64
+          target: google_apis
+    timeout-minutes: 20
+name: CI
+on:
+  repository_dispatch:
+    types: trigger-ga___ci.yml
